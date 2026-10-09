@@ -12,7 +12,8 @@ background-task notifications Claude Code delivers, through the plugin API.
 
 Nothing to disk. It keeps the input of each running long watch in memory for the
 session, starts the watch again with that input when it expires, and rewrites the
-transcript line Claude Code adds for the notice it drops.
+transcript line Claude Code adds for the notice it drops. It reads the permission
+check of its own re-arm call to approve it.
 
 ## Contact
 
