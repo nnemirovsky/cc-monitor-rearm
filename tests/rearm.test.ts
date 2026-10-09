@@ -131,6 +131,41 @@ test('a Monitor check that is not the re-arm gets the usual verdict', async ($, 
   expect(during.decision).toBe('ask')
 })
 
+test('settings PostToolUse hooks hear of Claude\'s Monitor but not of a re-arm', async ($, on) => {
+  mock.clock(on)
+  const heard: string[] = []
+  on('classic.PostToolUse', ($, e) => {
+    heard.push(e.tool_name)
+    return {}
+  })
+  let release!: () => void
+  let started!: () => void
+  const midway = new Promise<void>(resolve => (started = resolve))
+  let n = 0
+  on('tool.call', { tool: 'Monitor' }, async () => {
+    if (++n > 1) {
+      started()
+      await new Promise<void>(resolve => (release = resolve))
+    }
+    return { result: { taskId: `t${n}`, timeoutMs: 1800000 } }
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const post = (tool_name: string) =>
+    $.classic.PostToolUse({ tool_name, tool_input: { command: LONG.command }, tool_response: {}, tool_use_id: 'u1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+
+  await post('Monitor')
+  const rearm = notify($, expiry('t1'))
+  await midway
+  await post('Monitor')
+  await post('Bash')
+  release()
+  await rearm
+  await post('Monitor')
+
+  expect(heard).toEqual(['Monitor', 'Bash', 'Monitor'])
+})
+
 test('the dropped-notice row says what was re-armed', async ($, on) => {
   let stored: unknown
   on('session.append', ($, e, next) => {
