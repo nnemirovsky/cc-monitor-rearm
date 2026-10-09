@@ -1,0 +1,7 @@
+*.swp
+*.swo
+*~
+.DS_Store
+# Laid by Claude Code each time it loads the mod from a folder you own
+.claude-plugin/types/
+tsconfig.json
