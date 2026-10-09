@@ -80,6 +80,14 @@ export const register: Register = on => {
     return { decision: 'allow', reason: `${PLUGIN} re-arms a watch Claude started` }
   })
 
+  // A re-arm is no work of Claude's, so the settings PostToolUse hooks don't hear
+  // of it: a status hook would mark the idle session busy, with no Stop to follow.
+  on('classic.PostToolUse', async ($, e, next) => {
+    const command = (e.tool_input as { command?: unknown } | undefined)?.command
+    if (rearming !== undefined && e.tool_name === 'Monitor' && command === rearming) return {}
+    return next(e)
+  })
+
   // Claude still knows a re-armed watch by its first task id.
   on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
     const asked = (e as unknown as { task_id?: string }).task_id

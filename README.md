@@ -39,6 +39,9 @@ Watches started by subagents are left alone.
   day is up.
 * The plugin approves its own re-arm, since Claude's call with the same command was
   approved when the watch started. See below.
+* Your `PostToolUse` hooks in settings don't run for a re-arm. It is no work of
+  Claude's, and a hook that shows the session as busy (a terminal status dot) would
+  mark an idle session busy with no `Stop` to clear it.
 * The plugin keeps its list of watches in memory. After a reload or an update of the
   plugin, watches started before it expire as usual.
 * It reads the expiry notice by its text. If a Claude Code update changes that text,
