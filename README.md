@@ -37,11 +37,35 @@ Watches started by subagents are left alone.
 * Claude does not see the expiry notice, including its hint to widen a filter when a
   watch saw no events. A filter that never matches keeps running quietly until the
   day is up.
-* The re-arm goes through the same permission check as Claude's own call.
+* The re-arm goes through the same permission check as Claude's own call. In auto
+  mode that needs care, see below.
 * The plugin keeps its list of watches in memory. After a reload or an update of the
   plugin, watches started before it expire as usual.
 * It reads the expiry notice by its text. If a Claude Code update changes that text,
   expiries go to Claude as before.
+
+## Auto mode
+
+Auto mode approves a few plain commands on the spot and sends the rest to its
+classifier, which judges a call against the request Claude made it in. The re-arm
+is the plugin's call, not Claude's, so the classifier has nothing to judge and
+gives no verdict. The re-arm then fails and the expiry goes to Claude as usual.
+
+For a watch you want re-armed, add an allow rule for its command to
+`permissions.allow` in `~/.claude/settings.json`, so it is approved before the
+classifier is asked:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(/home/me/bin/watch_inbox.sh)"]
+  }
+}
+```
+
+The rule matches the whole command, so start the watch with the command the rule
+names, without a `cd … &&` in front. A `*` in the path covers a script inside a
+versioned plugin folder.
 
 ## Requirements
 
