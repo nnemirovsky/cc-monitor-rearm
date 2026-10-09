@@ -37,35 +37,29 @@ Watches started by subagents are left alone.
 * Claude does not see the expiry notice, including its hint to widen a filter when a
   watch saw no events. A filter that never matches keeps running quietly until the
   day is up.
-* The re-arm goes through the same permission check as Claude's own call. In auto
-  mode that needs care, see below.
+* The plugin approves its own re-arm, since Claude's call with the same command was
+  approved when the watch started. See below.
 * The plugin keeps its list of watches in memory. After a reload or an update of the
   plugin, watches started before it expire as usual.
 * It reads the expiry notice by its text. If a Claude Code update changes that text,
   expiries go to Claude as before.
 
-## Auto mode
+## Permissions
 
-Auto mode approves a few plain commands on the spot and sends the rest to its
-classifier, which judges a call against the request Claude made it in. The re-arm
-is the plugin's call, not Claude's, so the classifier has nothing to judge and
-gives no verdict. The re-arm then fails and the expiry goes to Claude as usual.
+The re-arm is the plugin's call, not Claude's. In auto mode the classifier judges
+a call against the request Claude made it in, so for the plugin's call it has
+nothing to judge and gives no verdict, and a prompt in the other modes would ask
+you again about a command you already let run.
 
-For a watch you want re-armed, add an allow rule for its command to
-`permissions.allow` in `~/.claude/settings.json`, so it is approved before the
-classifier is asked:
+So the plugin approves its re-arm itself, and nothing else: only its own `Monitor`
+call, only while it re-arms a watch, and only with the exact command Claude's
+approved call started that watch with. Every other call, Claude's or another
+plugin's, gets the usual check. The plugin turns only a pending ask into an
+approval, so a deny rule still stops the re-arm.
 
-```json
-{
-  "permissions": {
-    "allow": ["Bash(/home/me/bin/watch_inbox.sh)"]
-  }
-}
-```
-
-The rule matches the whole command, so start the watch with the command the rule
-names, without a `cd … &&` in front. A `*` in the path covers a script inside a
-versioned plugin folder.
+A watch runs its command again on each re-arm, for up to a day. If the command is a
+script that changes on disk in that time, the new version runs without a fresh
+check.
 
 ## Requirements
 

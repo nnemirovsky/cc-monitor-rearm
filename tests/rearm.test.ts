@@ -102,6 +102,35 @@ test('TaskStop with the first task id stops the re-armed watch', async ($, on) =
   expect(after.text).toBe(expiry('t2'))
 })
 
+test('a Monitor check that is not the re-arm gets the usual verdict', async ($, on) => {
+  mock.clock(on)
+  on('tool.check', () => ({ decision: 'ask' }))
+  let release!: () => void
+  let started!: () => void
+  const midway = new Promise<void>(resolve => (started = resolve))
+  let n = 0
+  on('tool.call', { tool: 'Monitor' }, async () => {
+    if (++n > 1) {
+      started()
+      await new Promise<void>(resolve => (release = resolve))
+    }
+    return { result: { taskId: `t${n}`, timeoutMs: 1800000 } }
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  const check = { tool: 'Monitor', input: { command: LONG.command }, tool_use_id: 'u9' }
+
+  const before = await $.tool.check(check)
+  const rearm = notify($, expiry('t1'))
+  await midway
+  const during = await $.tool.check(check)
+  release()
+  await rearm
+
+  expect(before.decision).toBe('ask')
+  expect(during.decision).toBe('ask')
+})
+
 test('the dropped-notice row says what was re-armed', async ($, on) => {
   let stored: unknown
   on('session.append', ($, e, next) => {

@@ -7,10 +7,16 @@ import type { EngineInterface, Register } from 'claude-code'
 // the moment it expires and drops the notice. Shorter watches expire as usual,
 // and so does a long one after a day, so Claude gets to look at a watch that
 // has stayed quiet for that long.
+//
+// The re-arm is this plugin's call, not Claude's, so auto mode's classifier has
+// no request to judge it by and gives no verdict. The command was approved when
+// Claude started the watch, so the plugin approves its own re-arm of it: only
+// the exact command it recorded, only while it is re-arming that watch.
 
 const LONG_MS = 1800000
 const DAY_MS = 86400000
-const REARMED = 'monitor-rearm: re-armed '
+const PLUGIN = 'monitor-rearm'
+const REARMED = `${PLUGIN}: re-armed `
 
 // One <task-notification> carrying a Monitor's expiry notice; group 1 its task id.
 const EXPIRY = /<task-notification>\s*<task-id>([^<]+)<\/task-id>(?:(?!<\/task-notification>)[\s\S])*?\[Monitor expired after [^\]]*\](?:(?!<\/task-notification>)[\s\S])*<\/task-notification>\s*/g
@@ -21,6 +27,9 @@ type Watch = { input: Record<string, unknown>; first: string; since: number }
 // the id Claude knows it by (its first).
 const watches = new Map<string, Watch>()
 const current = new Map<string, string>()
+
+// The command of the watch being re-armed right now, while its Monitor call runs.
+let rearming: string | undefined
 
 function taskId(res: { result?: unknown }): string | undefined {
   const r = res.result as { taskId?: unknown; persistent?: boolean } | undefined
@@ -35,7 +44,10 @@ async function rearm($: EngineInterface, id: string): Promise<string | undefined
     current.delete(watch.first)
     return undefined
   }
-  const res = await $.tool.call({ tool: 'Monitor', ...watch.input } as never)
+  rearming = String(watch.input.command)
+  const res = await $.tool.call({ tool: 'Monitor', ...watch.input } as never).finally(() => {
+    rearming = undefined
+  })
   const next = taskId(res)
   if (!next) {
     current.delete(watch.first)
@@ -56,6 +68,16 @@ export const register: Register = on => {
       watches.set(id, { input, first: id, since: await $.clock.now() })
     }
     return res
+  })
+
+  // Approve this plugin's own re-arm: its call, the command it is re-arming.
+  // Only an ask turns into an allow, so a deny rule still stops it.
+  on('tool.check', { tool: 'Monitor' }, async ($, e, next) => {
+    const verdict = await next(e)
+    const command = (e.input as { command?: unknown } | undefined)?.command
+    const ours = rearming !== undefined && e.tool_use_id && next.origin.plugin === PLUGIN && command === rearming
+    if (!ours || verdict.decision !== 'ask') return verdict
+    return { decision: 'allow', reason: `${PLUGIN} re-arms a watch Claude started` }
   })
 
   // Claude still knows a re-armed watch by its first task id.
