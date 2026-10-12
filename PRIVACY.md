@@ -10,9 +10,11 @@ background-task notifications Claude Code delivers, through the plugin API.
 
 ## What it writes
 
-Nothing to disk. It keeps the input of each running long watch in memory for the
-session, starts the watch again with that input when it expires, and rewrites the
-transcript line Claude Code adds for the notice it drops. It reads the permission
+One small file per session, `/tmp/monitor-rearm/<session id>`, holding only a
+timestamp: its timer writes it so the session's file watcher wakes the plugin. It
+keeps the input of each running long watch in memory for the session, starts the
+watch again with that input shortly before it expires (or when it expires), and
+rewrites the transcript line Claude Code adds for a notice it drops. It reads the permission
 check of its own re-arm call to approve it.
 
 ## Contact
