@@ -181,3 +181,90 @@ test('the dropped-notice row says what was re-armed', async ($, on) => {
 
   expect(stored).toEqual([{ type: 'text', text: '↻ re-armed PR checks (t1)' }])
 })
+
+const BELL = '/tmp/monitor-rearm/s1'
+
+// Stands for the session start and the file system: keeps the path of every write.
+function disk(on: On) {
+  const writes: string[] = []
+  on('classic.SessionStart', () => ({}))
+  on('fs.write', ($, e) => {
+    writes.push(e.path)
+    return { value: undefined }
+  })
+  return writes
+}
+
+test('SessionStart has the session watch the file the swap timer writes', async ($, on) => {
+  const writes = disk(on)
+
+  const res = await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+
+  expect(res.watchPaths).toEqual([BELL])
+  expect(writes).toEqual([BELL])
+})
+
+test('a minute before a long watch expires, it is swapped for a fresh one', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  const writes = disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+
+  await clock.advance(1800000 - 60000 - 1)
+  const early = writes.length
+  await clock.advance(1)
+  const rung = writes.length
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  expect([early, rung]).toEqual([1, 2])
+  expect(seen.started).toEqual([LONG, LONG])
+  expect(seen.stopped).toEqual(['t1'])
+})
+
+test('the swapped watch is swapped again, and TaskStop with its first id stops it', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  await $.tool.call({ tool: 'TaskStop', task_id: 't1' })
+
+  expect(seen.started.length).toBe(3)
+  expect(seen.stopped).toEqual(['t1', 't2', 't3'])
+})
+
+test('a watch that is not due yet, or a day old, is not swapped', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+  await clock.advance(86400000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  expect(seen.started.length).toBe(1)
+  expect(seen.stopped).toEqual([])
+})
+
+test('settings FileChanged hooks still hear of other files', async ($, on) => {
+  mock.clock(on)
+  disk(on)
+  const heard: string[] = []
+  on('classic.FileChanged', ($, e) => {
+    heard.push(e.file_path)
+    return {}
+  })
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+  await $.classic.FileChanged({ file_path: '/repo/.env', event: 'change' })
+
+  expect(heard).toEqual(['/repo/.env'])
+})
