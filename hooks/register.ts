@@ -4,10 +4,11 @@ import type { EngineInterface, Register } from 'claude-code'
 // with an expiry notice, which it answers by calling Monitor again: a turn
 // and a full context read just to keep a watch going. A watch asked for at
 // that maximum is meant to run on, so this mod keeps it going itself: a minute
-// before the watch would expire it starts the same watch again and stops the
-// old one, so no notice is sent and nothing shows in the session. Shorter
-// watches expire as usual, and so does a long one after a day, so Claude gets
-// to look at a watch that has stayed quiet for that long.
+// before the watch would expire it stops it and starts the same watch again,
+// so no notice is sent and nothing shows in the session. Shorter watches
+// expire as usual, and so does a long one after a day, so Claude gets to look
+// at a watch that has stayed quiet for that long. A watch whose command
+// exited, or that Claude stopped, is not kept going.
 //
 // The swap runs on a timer, but a plugin's calls from a timer pass none of its
 // own hooks, so it could not approve its own Monitor call. So the timer only
@@ -34,6 +35,9 @@ const REARMED = `${PLUGIN}: re-armed `
 
 // One <task-notification> carrying a Monitor's expiry notice; group 1 its task id.
 const EXPIRY = /<task-notification>\s*<task-id>([^<]+)<\/task-id>(?:(?!<\/task-notification>)[\s\S])*?\[Monitor expired after [^\]]*\](?:(?!<\/task-notification>)[\s\S])*<\/task-notification>\s*/g
+// One <task-notification> saying its task ended (only those carry a status:
+// the command exited, or the task was stopped); group 1 its task id.
+const ENDED = /<task-notification>\s*<task-id>([^<]+)<\/task-id>(?:(?!<\/task-notification>)[\s\S])*?<status>/g
 
 type Watch = { input: Record<string, unknown>; first: string; since: number; due: number }
 
@@ -52,6 +56,14 @@ let bell: string | undefined
 function taskId(res: { result?: unknown }): string | undefined {
   const r = res.result as { taskId?: unknown; persistent?: boolean } | undefined
   return typeof r?.taskId === 'string' && !r.persistent ? r.taskId : undefined
+}
+
+// Stops keeping the watch whose current task id this is.
+function forget(id: string) {
+  const watch = watches.get(id)
+  if (!watch) return
+  watches.delete(id)
+  current.delete(watch.first)
 }
 
 // Asks for the swap once a watch is due: the write fires FileChanged.
@@ -93,16 +105,28 @@ async function restart($: EngineInterface, id: string): Promise<string | undefin
   return next
 }
 
-// Swaps every watch that is due for a fresh one, then stops the old: it never
-// expires, so no notice is sent.
+// Stops every watch that is due and starts it again: the old one never
+// expires, so no notice is sent. A watch whose command already exited (a PR
+// merged, a build done) cannot be stopped and is not started again, or it
+// would report its last state anew.
 async function swap($: EngineInterface) {
   const now = await $.clock.now()
   for (const [id, watch] of [...watches]) {
     if (watch.due > now + 1000 || now - watch.since >= DAY_MS) continue
-    if (!(await restart($, id))) continue
     stopping = id
-    await $.tool.call({ tool: 'TaskStop', task_id: id } as never).finally(() => {
+    const res = await $.tool.call({ tool: 'TaskStop', task_id: id } as never).finally(() => {
       stopping = undefined
+    })
+    if (res.deny !== undefined || res.isError) {
+      forget(id)
+      continue
+    }
+    if (await restart($, id)) continue
+    // A FileChanged hook may not submit a prompt (it could wait on the turn the
+    // hook holds), so it is sent once the hook is done.
+    const text = `${PLUGIN} stopped the watch "${String(watch.input.description ?? 'Monitor')}" (${watch.first}) to restart it before it expired, but could not start it again. Start it again if it is still needed.`
+    $.clock.after(0, () => {
+      void $.prompt.submit({ text }).catch(() => undefined)
     })
   }
 }
@@ -153,27 +177,30 @@ export const register: Register = on => {
 
   // A re-arm is no work of Claude's, so the settings PostToolUse hooks don't hear
   // of it: a status hook would mark the idle session busy, with no Stop to follow.
-  on('classic.PostToolUse', async ($, e, next) => {
+  function ours(e: { tool_name: string; tool_input: unknown }): boolean {
     const input = e.tool_input as { command?: unknown; task_id?: unknown } | undefined
-    if (rearming !== undefined && e.tool_name === 'Monitor' && input?.command === rearming) return {}
-    if (stopping !== undefined && e.tool_name === 'TaskStop' && input?.task_id === stopping) return {}
-    return next(e)
-  })
+    if (rearming !== undefined && e.tool_name === 'Monitor' && input?.command === rearming) return true
+    return stopping !== undefined && e.tool_name === 'TaskStop' && input?.task_id === stopping
+  }
+  on('classic.PostToolUse', async ($, e, next) => (ours(e) ? {} : next(e)))
+  on('classic.PostToolUseFailure', async ($, e, next) => (ours(e) ? {} : next(e)))
 
-  // Claude still knows a re-armed watch by its first task id.
+  // Claude still knows a re-armed watch by its first task id, and its events
+  // name the current one: either stops it.
   on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
     if (stopping !== undefined) return next(e)
     const asked = (e as unknown as { task_id?: string }).task_id
-    const now = asked ? current.get(asked) : undefined
-    if (!now) return next(e)
-    watches.delete(now)
-    current.delete(asked!)
-    return next({ ...e, task_id: now } as typeof e)
+    if (!asked) return next(e)
+    const now = current.get(asked) ?? asked
+    forget(now)
+    return now === asked ? next(e) : next({ ...e, task_id: now } as typeof e)
   })
 
   // The expiry notice of a watch that was not swapped in time: re-arm it and
-  // take the notice out, so no turn starts for it.
+  // take the notice out, so no turn starts for it. A watch that ended on its
+  // own is not kept any longer.
   on('prompt.submit', { origin: { kind: 'task-notification' } }, async ($, e, next) => {
+    for (const m of e.text.matchAll(ENDED)) forget(m[1]!)
     if (!e.text.includes('[Monitor expired after')) return next(e)
     const names: string[] = []
     let kept = e.text
