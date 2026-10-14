@@ -7,8 +7,8 @@ afternoon of watching a pull request or a log that adds up to a lot of turns tha
 do nothing.
 
 This plugin keeps the watch going itself. A minute before the watch would expire it
-starts the same watch again, with the same input, and stops the old one, so the
-expiry notice is never sent. Claude is not woken, no tokens are spent, and nothing
+stops it and starts the same watch again, with the same input, so the expiry notice
+is never sent. Claude is not woken, no tokens are spent, and nothing
 shows in the transcript. Events from the new watch reach Claude as before.
 
 If a watch expires anyway (see below), the plugin re-arms it then and drops the
@@ -44,8 +44,10 @@ Watches started by subagents are left alone.
   session that was already running when you installed or updated the plugin falls
   back to re-arming on expiry until it is restarted. So does a watch whose swap was
   missed, for example while the machine slept.
-* The re-armed watch has a new task id, which its events carry. `TaskStop` with the
-  watch's first id, the one Claude saw, still stops it.
+* The re-armed watch has a new task id, which its events carry. `TaskStop` with
+  either id, the first one Claude saw or the one in the latest event, stops it.
+* A watch whose command exits on its own (the pull request merged, the build
+  finished) is not started again, so its last output is not reported twice.
 * Claude does not see the expiry notice, including its hint to widen a filter when a
   watch saw no events. A filter that never matches keeps running quietly until the
   day is up.

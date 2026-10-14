@@ -1,6 +1,6 @@
 {
   "name": "monitor-rearm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Keeps Claude Code's long Monitor watches running past the 30-minute cap, so their expiry no longer wakes Claude or spends a turn",
   "owner": {
     "name": "nnemirovsky"

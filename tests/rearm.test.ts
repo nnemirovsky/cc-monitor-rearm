@@ -4,21 +4,34 @@ import type { On } from 'claude-code'
 
 const LONG = { description: 'PR checks', command: 'gh pr checks --watch', timeout_ms: 1800000 }
 
-// Stands for the engine's Monitor and TaskStop: hands out task ids in order and
-// keeps every call that reached it.
+// Stands for the engine's Monitor and TaskStop: hands out task ids in order,
+// keeps every call that reached it, and refuses to stop a task not running.
 function world(on: On) {
-  const seen = { started: [] as Record<string, unknown>[], stopped: [] as string[] }
+  const seen = {
+    started: [] as Record<string, unknown>[],
+    stopped: [] as string[],
+    running: new Set<string>(),
+    prompts: [] as string[],
+    refuse: false,
+  }
   let n = 0
   on('tool.call', { tool: 'Monitor' }, ($, e) => {
     const { tool, tool_use_id, ...input } = e as unknown as Record<string, unknown>
+    if (seen.refuse) return { deny: 'denied' }
     seen.started.push(input)
+    seen.running.add(`t${n + 1}`)
     return { result: { taskId: `t${++n}`, timeoutMs: Number(input.timeout_ms) } }
   })
   on('tool.call', { tool: 'TaskStop' }, ($, e) => {
-    seen.stopped.push(String(e.task_id))
-    return { result: { message: 'stopped', task_id: String(e.task_id) } }
+    const id = String(e.task_id)
+    seen.stopped.push(id)
+    if (!seen.running.delete(id)) return { isError: true, result: `Task ${id} is not running`, text: `Task ${id} is not running` }
+    return { result: { message: 'stopped', task_id: id } }
   })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.submit', ($, e) => {
+    seen.prompts.push(e.text)
+    return { text: e.text }
+  })
   return seen
 }
 
@@ -267,4 +280,76 @@ test('settings FileChanged hooks still hear of other files', async ($, on) => {
   await $.classic.FileChanged({ file_path: '/repo/.env', event: 'change' })
 
   expect(heard).toEqual(['/repo/.env'])
+})
+
+function ended(id: string): string {
+  return `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n<summary>Monitor "PR checks" stream ended</summary>\n<event>merged</event>\n</task-notification>`
+}
+
+test('a watch whose command exited is not started again', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  seen.running.delete('t1')
+
+  const res = await notify($, ended('t1'))
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  expect(res.text).toBe(ended('t1'))
+  expect(seen.started.length).toBe(1)
+  expect(seen.stopped).toEqual([])
+})
+
+test('a watch that exited before its notice was read is not started again', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  seen.running.delete('t1')
+
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+  await clock.advance(1800000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  expect(seen.started.length).toBe(1)
+  expect(seen.stopped).toEqual(['t1'])
+})
+
+test('TaskStop with the current task id stops the swapped watch', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  await $.tool.call({ tool: 'TaskStop', task_id: 't2' })
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+
+  expect(seen.started.length).toBe(2)
+  expect(seen.stopped).toEqual(['t1', 't2'])
+})
+
+test('Claude hears of a stopped watch that could not be started again', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = world(on)
+  disk(on)
+  await $.classic.SessionStart({ source: 'startup', session_id: 's1' })
+  await $.tool.call({ tool: 'Monitor', ...LONG })
+  seen.refuse = true
+
+  await clock.advance(1800000 - 60000)
+  await $.classic.FileChanged({ file_path: BELL, event: 'change' })
+  await clock.advance(1)
+
+  expect(seen.stopped).toEqual(['t1'])
+  expect(seen.prompts.length).toBe(1)
+  expect(seen.prompts[0]).toContain('"PR checks" (t1)')
 })
