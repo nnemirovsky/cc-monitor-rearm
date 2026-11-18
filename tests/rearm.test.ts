@@ -117,7 +117,9 @@ test('TaskStop with the first task id stops the re-armed watch', async ($, on) =
 
 test('a Monitor check that is not the re-arm gets the usual verdict', async ($, on) => {
   mock.clock(on)
-  on('tool.check', () => ({ decision: 'ask' }))
+  // Claude's own call starting the watch is approved. Every check after it asks.
+  let asking = false
+  on('tool.check', () => ({ decision: asking ? 'ask' : 'allow' }))
   let release!: () => void
   let started!: () => void
   const midway = new Promise<void>(resolve => (started = resolve))
@@ -131,6 +133,7 @@ test('a Monitor check that is not the re-arm gets the usual verdict', async ($, 
   })
   on('prompt.submit', ($, e) => ({ text: e.text }))
   await $.tool.call({ tool: 'Monitor', ...LONG })
+  asking = true
   const check = { tool: 'Monitor', input: { command: LONG.command }, tool_use_id: 'u9' }
 
   const before = await $.tool.check(check)
